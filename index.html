@@ -496,7 +496,7 @@ window.toast = function(msg) {
 };
 
 (async function boot() {
-  if (window.location.pathname === '/callback') { await handleCallback(); return; }
+if (window.location.search.includes('code=')) {await handleCallback();return;}
   const token = localStorage.getItem('pq_token');
   const exp = parseInt(localStorage.getItem('pq_token_exp')||'0');
   if (token && Date.now() < exp) { await initHost(token); }
