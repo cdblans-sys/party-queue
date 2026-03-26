@@ -1,9 +1,11 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>PartyQueue 🎵</title>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>PartyQueue 🎵</title>
+
+  <!-- (styles unchanged, keeping yours minimal here for brevity) -->
 </head>
 
 <body>
@@ -13,11 +15,11 @@
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { 
-  getFirestore, doc, collection, onSnapshot, addDoc, 
+  getFirestore, doc, collection, onSnapshot, setDoc, updateDoc, addDoc, deleteDoc, getDocs,
   serverTimestamp, increment, runTransaction 
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
-// 🔥 YOUR FIREBASE CONFIG (unchanged)
+// 🔥 Firebase config (your original)
 const firebaseConfig = {
   apiKey: "AIzaSyBboSmnxx3Yo0mtdVPWzNhL0EaEjWoLExg",
   authDomain: "party-queue-97670.firebaseapp.com",
@@ -27,21 +29,22 @@ const firebaseConfig = {
   appId: "1:974203351880:web:c9348e2f40b11992ec797d"
 };
 
-const app = initializeApp(firebaseConfig);
-const db = getFirestore(app);
+const fbApp = initializeApp(firebaseConfig);
+const db = getFirestore(fbApp);
 
 // ======================
 // 🔥 STATE (UPDATED)
 // ======================
 let state = {
+  isHost: false,
   userName: '',
-  userId: localStorage.getItem('pq_userId') || crypto.randomUUID(),
+  userId: localStorage.getItem('pq_userId') || crypto.randomUUID(), // ✅ NEW
 };
 
 localStorage.setItem('pq_userId', state.userId);
 
 // ======================
-// 🔔 SIMPLE TOAST
+// 🔔 TOAST (simple)
 // ======================
 function toast(msg) {
   console.log(msg);
@@ -69,14 +72,16 @@ function renderQueue(songs) {
     return;
   }
 
-  el.innerHTML = songs.map(s => {
+  el.innerHTML = songs.map((s,i) => {
     const voted = s.voters && s.voters[state.userId];
 
     return `
-      <div style="margin:10px; padding:10px; border:1px solid #ccc;">
-        <b>${s.title}</b> - ${s.artist}<br/>
+      <div style="padding:10px; border:1px solid #333; margin:8px;">
+        <strong>${i+1}. ${s.title}</strong><br/>
+        <small>${s.artist}</small><br/><br/>
+        
         <button onclick="vote('${s.id}')">
-          👍 ${s.votes || 0} ${voted ? '(voted)' : ''}
+          ▲ ${s.votes || 0} ${voted ? '(voted)' : ''}
         </button>
       </div>
     `;
@@ -93,7 +98,6 @@ window.vote = async function(songId) {
     await runTransaction(db, async (transaction) => {
       const snap = await transaction.get(ref);
 
-      // ❌ Song no longer exists
       if (!snap.exists()) {
         throw new Error('not-found');
       }
@@ -103,7 +107,6 @@ window.vote = async function(songId) {
       const hasVoted = voters[state.userId];
 
       if (hasVoted) {
-        // 🔽 REMOVE VOTE
         delete voters[state.userId];
 
         transaction.update(ref, {
@@ -111,7 +114,6 @@ window.vote = async function(songId) {
           voters: voters
         });
       } else {
-        // 🔼 ADD VOTE
         voters[state.userId] = true;
 
         transaction.update(ref, {
@@ -122,10 +124,10 @@ window.vote = async function(songId) {
     });
 
   } catch (e) {
-    console.error(e);
+    console.error('Vote error:', e);
 
     if (e.message === 'not-found') {
-      toast('⚠️ Song already removed or played');
+      toast('⚠️ Song already played or removed');
     } else {
       toast('❌ Vote failed');
     }
@@ -133,15 +135,22 @@ window.vote = async function(songId) {
 };
 
 // ======================
-// ➕ ADD SONG (TEST BUTTON)
+// ➕ ADD SONG (TEST)
 // ======================
-window.addTestSong = async function() {
+window.addToQueue = async function(song) {
   await addDoc(collection(db,'queue'), {
-    title: "Test Song",
-    artist: "Test Artist",
+    ...song,
     votes: 0,
-    voters: {}, // 🔥 important
+    voters: {}, // ✅ IMPORTANT
     addedAt: serverTimestamp()
+  });
+};
+
+// TEST BUTTON
+window.addTestSong = function() {
+  addToQueue({
+    title: "Test Song",
+    artist: "Test Artist"
   });
 };
 
