@@ -355,14 +355,19 @@ function updateNowPlaying(track, ps) {
 }
 
 async function playNextInQueue() {
-  const q = query(collection(db, 'queue'), orderBy('votes','desc'), orderBy('addedAt','asc'));
-  const snap = await getDocs(q);
+  // Sort client-side to avoid needing a composite index
+  const snap = await getDocs(collection(db, 'queue'));
   if (snap.empty) { toast('Queue is empty!'); return; }
-  const top = snap.docs[0];
-  const song = top.data();
+  const sorted = snap.docs
+    .map(d => ({ ref: d.ref, ...d.data() }))
+    .sort((a, b) => (b.votes||0) - (a.votes||0) || (a.addedAt?.seconds||0) - (b.addedAt?.seconds||0));
+  const top = sorted[0];
   await deleteDoc(top.ref);
-  await setDoc(doc(db,'nowPlaying','current'), {...song, startedAt: serverTimestamp()});
-  if (state.isHost) await playTrack(song.uri);
+  await setDoc(doc(db,'nowPlaying','current'), {
+    title: top.title, artist: top.artist, art: top.art,
+    uri: top.uri, duration_ms: top.duration_ms, startedAt: serverTimestamp()
+  });
+  if (state.isHost) await playTrack(top.uri);
 }
 
 window.joinAsGuest = function() {
@@ -404,8 +409,15 @@ function initApp() {
   document.getElementById('user-display-name').textContent = name;
   document.getElementById('user-avatar-initials').textContent = name.slice(0,2).toUpperCase();
   if (state.isHost) document.getElementById('host-tag').style.display = 'inline';
-  const q = query(collection(db,'queue'), orderBy('votes','desc'), orderBy('addedAt','asc'));
-  onSnapshot(q, snap => renderQueue(snap.docs.map(d=>({id:d.id,...d.data()}))));
+
+  // Listen to queue — sort client-side to avoid composite index requirement
+  onSnapshot(collection(db,'queue'), snap => {
+    const songs = snap.docs
+      .map(d => ({ id: d.id, ...d.data() }))
+      .sort((a, b) => (b.votes||0) - (a.votes||0) || (a.addedAt?.seconds||0) - (b.addedAt?.seconds||0));
+    renderQueue(songs);
+  });
+
   onSnapshot(doc(db,'nowPlaying','current'), snap => {
     if (snap.exists()) {
       const d = snap.data();
@@ -432,9 +444,14 @@ function renderQueue(songs) {
 
 window.vote = async function(songId, hasVoted) {
   const ref = doc(db,'queue',songId);
-  if (hasVoted) { await updateDoc(ref,{votes:increment(-1)}); delete state.userVotes[songId]; }
-  else { await updateDoc(ref,{votes:increment(1)}); state.userVotes[songId]=true; }
-  localStorage.setItem('pq_votes', JSON.stringify(state.userVotes));
+  try {
+    if (hasVoted) { await updateDoc(ref,{votes:increment(-1)}); delete state.userVotes[songId]; }
+    else { await updateDoc(ref,{votes:increment(1)}); state.userVotes[songId]=true; }
+    localStorage.setItem('pq_votes', JSON.stringify(state.userVotes));
+  } catch(e) {
+    console.error('Vote error:', e);
+    toast('❌ Vote failed: ' + (e.code || e.message));
+  }
 };
 
 window.searchSongs = async function() {
@@ -453,7 +470,7 @@ window.searchSongs = async function() {
   try {
     const data = await spotifyFetch(`/search?q=${encodeURIComponent(q)}&type=track&limit=6`);
     renderSearchResults(data.tracks?.items||[]);
-  } catch(e) { el.innerHTML = `<div style="color:var(--red);font-size:14px;padding:8px">Search failed.</div>`; }
+  } catch(e) { el.innerHTML = `<div style="color:var(--red);font-size:14px;padding:8px">Search failed: ${e.message}</div>`; }
 };
 
 function renderSearchResults(tracks) {
@@ -473,11 +490,20 @@ function renderSearchResults(tracks) {
 
 window.addToQueue = async function(song) {
   try {
-    await addDoc(collection(db,'queue'), {...song, votes:0, addedBy:state.userName, addedAt:serverTimestamp()});
+    await addDoc(collection(db,'queue'), {
+      ...song, votes: 0, addedBy: state.userName, addedAt: serverTimestamp()
+    });
     toast(`✓ Added "${song.title}"`);
     document.getElementById('search-results').innerHTML='';
     document.getElementById('search-input').value='';
-  } catch(e) { toast('Failed to add song.'); }
+  } catch(e) {
+    console.error('addToQueue error:', e);
+    if (e.code === 'permission-denied') {
+      toast('❌ Firebase permission denied — check Firestore rules');
+    } else {
+      toast('❌ Could not add song: ' + (e.code || e.message));
+    }
+  }
 };
 
 window.shareLink = function() {
@@ -496,7 +522,7 @@ window.toast = function(msg) {
 };
 
 (async function boot() {
-if (window.location.search.includes('code=')) {await handleCallback();return;}
+  if (window.location.search.includes('code=')) { await handleCallback(); return; }
   const token = localStorage.getItem('pq_token');
   const exp = parseInt(localStorage.getItem('pq_token_exp')||'0');
   if (token && Date.now() < exp) { await initHost(token); }
