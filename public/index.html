@@ -175,7 +175,7 @@
           </div>
         </div>
         <div class="host-controls" id="host-controls" style="display:none">
-          <button class="btn btn-sm btn-green" onclick="transferPlayback()">▶ Activate player</button>
+          <button class="btn btn-sm btn-green" id="play-pause-btn" onclick="togglePlayPause()">▶ Play</button>
           <button class="btn btn-sm btn-outline" onclick="openDevicePicker()">📱 Switch device</button>
           <button class="btn btn-sm btn-outline" onclick="skipSong()">Skip →</button>
         </div>
@@ -228,6 +228,7 @@ let state = {
   progressInterval: null,
   queueSongs: [],
   pollInterval: null,
+  isPlaying: false,
 };
 
 function generateCodeVerifier() {
@@ -292,12 +293,15 @@ async function spotifyFetch(url, opts={}) {
   return res.json();
 }
 
-window.transferPlayback = async function() {
+window.togglePlayPause = async function() {
   if (!state.deviceId) { toast('Player not ready yet...'); return; }
   try {
-    await spotifyFetch('/me/player', { method: 'PUT', body: JSON.stringify({ device_ids: [state.deviceId], play: false }) });
-    toast('🎵 Player activated! You can now play music.');
-  } catch(e) { toast('Could not activate player.'); }
+    if (state.isPlaying) {
+      await spotifyFetch('/me/player/pause', { method: 'PUT' });
+    } else {
+      await spotifyFetch('/me/player/play', { method: 'PUT' });
+    }
+  } catch(e) { toast('Could not control playback.'); }
 };
 
 async function playTrack(uri) {
@@ -315,15 +319,25 @@ function initSpotifySDK(token) {
     state.player = player;
     player.addListener('ready', ({ device_id }) => {
       state.deviceId = device_id;
-      state.browserDeviceId = device_id;  // Remember browser player ID
+      state.browserDeviceId = device_id;
+      // Auto-activate browser as playback device silently
+      spotifyFetch('/me/player', { method: 'PUT', body: JSON.stringify({ device_ids: [device_id], play: false }) })
+        .catch(() => {});
       document.getElementById('host-controls').style.display = 'flex';
-      toast('🎵 Spotify player ready!');
+      toast('🎵 Spotify player ready! Press Play to start.');
     });
     player.addListener('player_state_changed', async (s) => {
       if (!s) return;
       const track = s.track_window?.current_track;
       if (!track) return;
 
+      // Update play/pause button state
+      state.isPlaying = !s.paused;
+      const btn = document.getElementById('play-pause-btn');
+      if (btn) {
+        btn.textContent = s.paused ? '▶ Play' : '⏸ Pause';
+        btn.className = s.paused ? 'btn btn-sm btn-green' : 'btn btn-sm btn-outline';
+      }
       const isSameSong = state.currentTrackId === track.id;
       const isDeviceTransferGlitch = isSameSong && s.position < 1500 && !s.paused;
 
