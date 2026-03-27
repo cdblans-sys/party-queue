@@ -213,6 +213,7 @@ let state = {
   player: null, currentTrackId: null,
   userVotes: JSON.parse(localStorage.getItem('pq_votes') || '{}'),
   progressInterval: null,
+  queueSongs: [],
 };
 
 function generateCodeVerifier() {
@@ -430,19 +431,24 @@ function renderQueue(songs) {
   const el = document.getElementById('queue-list');
   document.getElementById('queue-subtitle').textContent = `${songs.length} song${songs.length!==1?'s':''} · sorted by votes`;
   if (!songs.length) { el.innerHTML = `<div class="empty-queue"><span class="emoji">🎶</span><p>No songs yet.<br/>Search for something!</p></div>`; return; }
+  state.queueSongs = songs;
   el.innerHTML = songs.map((s,i) => {
     const voted = state.userVotes[s.id];
     return `<div class="queue-item ${i===0?'top-vote':''}">
       <div class="queue-rank ${i===0?'first':''}">${i+1}</div>
       ${s.art?`<img class="queue-art" src="${s.art}" alt=""/>`:`<div class="queue-art-placeholder">🎵</div>`}
       <div class="queue-info"><div class="queue-title">${s.title}</div><div class="queue-artist">${s.artist}</div></div>
-      <button class="vote-btn ${voted?'voted':''}" onclick="vote('${s.id}',${voted?'true':'false'})">
+      <button class="vote-btn ${voted?'voted':''}" onclick="vote(${i})">
         <span class="vote-arrow">▲</span><span class="vote-count">${s.votes||0}</span>
       </button></div>`;
   }).join('');
 }
 
-window.vote = async function(songId, hasVoted) {
+window.vote = async function(idx) {
+  const song = state.queueSongs[idx];
+  if (!song) { toast('❌ Song not found, try refreshing'); return; }
+  const songId = song.id;
+  const hasVoted = !!state.userVotes[songId];
   const ref = doc(db,'queue',songId);
   try {
     if (hasVoted) { await updateDoc(ref,{votes:increment(-1)}); delete state.userVotes[songId]; }
