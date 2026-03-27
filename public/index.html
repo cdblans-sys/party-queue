@@ -360,7 +360,7 @@ async function playNextInQueue() {
   const snap = await getDocs(collection(db, 'queue'));
   if (snap.empty) { toast('Queue is empty!'); return; }
   const sorted = snap.docs
-    .map(d => ({ ref: d.ref, ...d.data() }))
+    .map(d => ({ ref: d.ref, firestoreId: d.id, ...d.data() }))
     .sort((a, b) => (b.votes||0) - (a.votes||0) || (a.addedAt?.seconds||0) - (b.addedAt?.seconds||0));
   const top = sorted[0];
   await deleteDoc(top.ref);
@@ -414,7 +414,7 @@ function initApp() {
   // Listen to queue — sort client-side to avoid composite index requirement
   onSnapshot(collection(db,'queue'), snap => {
     const songs = snap.docs
-      .map(d => ({ id: d.id, ...d.data() }))
+      .map(d => ({ firestoreId: d.id, ...d.data() }))
       .sort((a, b) => (b.votes||0) - (a.votes||0) || (a.addedAt?.seconds||0) - (b.addedAt?.seconds||0));
     renderQueue(songs);
   });
@@ -433,7 +433,7 @@ function renderQueue(songs) {
   if (!songs.length) { el.innerHTML = `<div class="empty-queue"><span class="emoji">🎶</span><p>No songs yet.<br/>Search for something!</p></div>`; return; }
   state.queueSongs = songs;
   el.innerHTML = songs.map((s,i) => {
-    const voted = state.userVotes[s.id];
+    const voted = state.userVotes[s.firestoreId];
     return `<div class="queue-item ${i===0?'top-vote':''}">
       <div class="queue-rank ${i===0?'first':''}">${i+1}</div>
       ${s.art?`<img class="queue-art" src="${s.art}" alt=""/>`:`<div class="queue-art-placeholder">🎵</div>`}
@@ -447,17 +447,17 @@ function renderQueue(songs) {
 window.vote = async function(idx) {
   const song = state.queueSongs[idx];
   if (!song) { toast('❌ Song not found, try refreshing'); return; }
-  const songId = song.id;
-  const hasVoted = !!state.userVotes[songId];
-  const ref = doc(db,'queue',songId);
+  const firestoreId = song.firestoreId;
+  const spotifyId = song.id;
+  const hasVoted = !!state.userVotes[firestoreId];
+  const ref = doc(db,'queue',firestoreId);
   try {
-    // Use set with merge so it works even if doc is mid-sync
     if (hasVoted) {
-      await setDoc(ref, {votes: increment(-1)}, {merge: true});
-      delete state.userVotes[songId];
+      await updateDoc(ref, {votes: increment(-1)});
+      delete state.userVotes[firestoreId];
     } else {
-      await setDoc(ref, {votes: increment(1)}, {merge: true});
-      state.userVotes[songId] = true;
+      await updateDoc(ref, {votes: increment(1)});
+      state.userVotes[firestoreId] = true;
     }
     localStorage.setItem('pq_votes', JSON.stringify(state.userVotes));
   } catch(e) {
