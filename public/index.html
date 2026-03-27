@@ -227,6 +227,7 @@ let state = {
   userVotes: JSON.parse(localStorage.getItem('pq_votes') || '{}'),
   progressInterval: null,
   queueSongs: [],
+  pollInterval: null,
 };
 
 function generateCodeVerifier() {
@@ -314,6 +315,7 @@ function initSpotifySDK(token) {
     state.player = player;
     player.addListener('ready', ({ device_id }) => {
       state.deviceId = device_id;
+      state.browserDeviceId = device_id;  // Remember browser player ID
       document.getElementById('host-controls').style.display = 'flex';
       toast('🎵 Spotify player ready!');
     });
@@ -346,6 +348,10 @@ function initSpotifySDK(token) {
         await playNextInQueue();
       }
       state.currentTrackId = track.id;
+      // If SDK reports we're no longer active, switch to polling
+      if (s.playback_id === undefined && !s.track_window?.current_track) {
+        startPollingPlayback();
+      }
     });
     player.connect();
   };
@@ -619,6 +625,40 @@ window.openDevicePicker = async function() {
   }
 };
 
+function startPollingPlayback() {
+  clearInterval(state.pollInterval);
+  state.pollInterval = setInterval(async () => {
+    try {
+      const data = await spotifyFetch('/me/player');
+      if (!data || !data.item) return;
+      const track = data.item;
+      const isPlaying = data.is_playing;
+      const position = data.progress_ms || 0;
+      // Update Firebase so everyone (including host) stays in sync
+      await setDoc(doc(db,'nowPlaying','current'), {
+        title: track.name,
+        artist: track.artists?.map(a=>a.name).join(', ')||'',
+        art: track.album?.images?.[0]?.url||'',
+        uri: track.uri,
+        duration_ms: track.duration_ms,
+        position_ms: position,
+        paused: !isPlaying,
+        updatedAt: Date.now()
+      }, {merge: true});
+      // Check if song ended
+      if (!isPlaying && position === 0 && state.currentTrackId === track.id) {
+        await playNextInQueue();
+      }
+      state.currentTrackId = track.id;
+    } catch(e) { console.warn('Poll error', e); }
+  }, 3000);
+}
+
+function stopPolling() {
+  clearInterval(state.pollInterval);
+  state.pollInterval = null;
+}
+
 window.selectDevice = async function(deviceId, deviceName) {
   document.getElementById('device-modal-bg')?.remove();
   try {
@@ -628,6 +668,13 @@ window.selectDevice = async function(deviceId, deviceName) {
     });
     state.deviceId = deviceId;
     toast(`🎵 Switched to ${deviceName}`);
+    // If switching away from the browser player, start polling the API instead
+    const isBrowserPlayer = deviceId === state.browserDeviceId;
+    if (isBrowserPlayer) {
+      stopPolling();
+    } else {
+      startPollingPlayback();
+    }
   } catch(e) {
     toast('❌ Could not switch device: ' + (e.message || e.code));
   }
