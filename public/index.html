@@ -461,16 +461,19 @@ function initApp() {
   onSnapshot(doc(db,'nowPlaying','current'), snap => {
     if (!snap.exists()) return;
     const d = snap.data();
-    updateNowPlaying({name:d.title, artists:[{name:d.artist}], album:{images:[{url:d.art}]}, duration_ms:d.duration_ms}, null);
-
-    // Always clear the old interval — new song or not, start fresh
-    clearInterval(state.progressInterval);
-
     const dur = d.duration_ms;
+
+    // Always update song info (title, artist, art) for everyone
+    updateNowPlaying({name:d.title, artists:[{name:d.artist}], album:{images:[{url:d.art}]}, duration_ms:dur}, null);
+
+    // Host timer is driven by the Spotify SDK — don't touch it here
+    if (state.isHost) return;
+
+    // Guests: manage their own timer from Firebase data
+    clearInterval(state.progressInterval);
     if (!dur) return;
 
     if (d.paused) {
-      // Just show the frozen position
       const pos = d.position_ms || 0;
       document.getElementById('np-progress').style.width = `${(pos/dur)*100}%`;
       document.getElementById('np-current').textContent = msToTime(pos);
@@ -478,8 +481,7 @@ function initApp() {
       return;
     }
 
-    if (!state.isHost && d.position_ms != null) {
-      // Compensate for Firebase round-trip delay
+    if (d.position_ms != null) {
       const elapsed = d.updatedAt ? Date.now() - d.updatedAt : 0;
       let p = Math.max(0, (d.position_ms || 0) + elapsed);
       const updateBar = () => {
