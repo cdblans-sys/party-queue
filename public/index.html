@@ -100,6 +100,18 @@
     .spinner { width: 40px; height: 40px; border: 3px solid var(--border); border-top-color: var(--accent2); border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 20px; }
     @keyframes spin { to { transform: rotate(360deg); } }
     .host-tag { font-size: 10px; font-weight: 700; letter-spacing: 1px; background: rgba(124,58,237,0.2); color: var(--accent2); border: 1px solid rgba(168,85,247,0.3); border-radius: 4px; padding: 2px 6px; font-family: 'Syne', sans-serif; }
+    .device-modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100; display: flex; align-items: center; justify-content: center; }
+    .device-modal { background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 24px; width: 340px; max-width: 90vw; }
+    .device-modal h3 { font-family: 'Syne', sans-serif; font-size: 16px; font-weight: 700; margin-bottom: 4px; }
+    .device-modal p { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+    .device-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+    .device-item { display: flex; align-items: center; gap: 12px; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; cursor: pointer; transition: border-color .2s; }
+    .device-item:hover { border-color: var(--accent); }
+    .device-item.active { border-color: var(--accent2); }
+    .device-icon { font-size: 20px; flex-shrink: 0; }
+    .device-name { font-size: 14px; font-weight: 500; }
+    .device-type { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    .device-active-badge { font-size: 10px; color: var(--accent2); font-weight: 700; letter-spacing: 1px; margin-left: auto; }
   </style>
 </head>
 <body>
@@ -164,6 +176,7 @@
         </div>
         <div class="host-controls" id="host-controls" style="display:none">
           <button class="btn btn-sm btn-green" onclick="transferPlayback()">▶ Activate player</button>
+          <button class="btn btn-sm btn-outline" onclick="openDevicePicker()">📱 Switch device</button>
           <button class="btn btn-sm btn-outline" onclick="skipSong()">Skip →</button>
         </div>
       </div>
@@ -309,6 +322,19 @@ function initSpotifySDK(token) {
       const track = s.track_window?.current_track;
       if (!track) return;
       updateNowPlaying(track, s);
+      // Write progress to Firebase so guests can sync
+      try {
+        await setDoc(doc(db,'nowPlaying','current'), {
+          title: track.name,
+          artist: track.artists?.map(a=>a.name).join(', ')||'',
+          art: track.album?.images?.[0]?.url||'',
+          uri: track.uri,
+          duration_ms: track.duration_ms,
+          position_ms: s.position,
+          paused: s.paused,
+          updatedAt: Date.now()
+        }, {merge: true});
+      } catch(e) { console.warn('Progress sync error', e); }
       if (s.paused && s.position === 0 && state.currentTrackId && state.currentTrackId === track.id) {
         await playNextInQueue();
       }
@@ -423,6 +449,30 @@ function initApp() {
     if (snap.exists()) {
       const d = snap.data();
       updateNowPlaying({name:d.title, artists:[{name:d.artist}], album:{images:[{url:d.art}]}, duration_ms:d.duration_ms}, null);
+      // Guests animate progress bar from Firebase data
+      if (!state.isHost && d.position_ms != null && d.duration_ms && !d.paused) {
+        clearInterval(state.progressInterval);
+        // Estimate current position accounting for time since host wrote to Firebase
+        const elapsed = d.updatedAt ? Date.now() - d.updatedAt : 0;
+        let p = (d.position_ms || 0) + elapsed;
+        const dur = d.duration_ms;
+        const updateBar = () => {
+          if (p > dur) { clearInterval(state.progressInterval); return; }
+          document.getElementById('np-progress').style.width = `${(p/dur)*100}%`;
+          document.getElementById('np-current').textContent = msToTime(p);
+          document.getElementById('np-duration').textContent = msToTime(dur);
+          p += 1000;
+        };
+        updateBar();
+        state.progressInterval = setInterval(updateBar, 1000);
+      } else if (!state.isHost && d.paused) {
+        clearInterval(state.progressInterval);
+        if (d.position_ms != null && d.duration_ms) {
+          document.getElementById('np-progress').style.width = `${(d.position_ms/d.duration_ms)*100}%`;
+          document.getElementById('np-current').textContent = msToTime(d.position_ms);
+          document.getElementById('np-duration').textContent = msToTime(d.duration_ms);
+        }
+      }
     }
   });
 }
@@ -515,6 +565,59 @@ window.addToQueue = async function(song) {
     } else {
       toast('❌ Could not add song: ' + (e.code || e.message));
     }
+  }
+};
+
+window.openDevicePicker = async function() {
+  // Remove any existing modal
+  document.getElementById('device-modal-bg')?.remove();
+
+  const bg = document.createElement('div');
+  bg.id = 'device-modal-bg';
+  bg.className = 'device-modal-bg';
+  bg.innerHTML = `<div class="device-modal">
+    <h3>Switch playback device</h3>
+    <p>Choose where to play music</p>
+    <div class="device-list" id="device-list"><div style="color:var(--muted);font-size:13px">Loading devices...</div></div>
+    <button class="btn btn-outline" style="width:100%" onclick="document.getElementById('device-modal-bg').remove()">Cancel</button>
+  </div>`;
+  bg.addEventListener('click', e => { if (e.target === bg) bg.remove(); });
+  document.body.appendChild(bg);
+
+  try {
+    const data = await spotifyFetch('/me/player/devices');
+    const devices = data?.devices || [];
+    const list = document.getElementById('device-list');
+    if (!devices.length) {
+      list.innerHTML = '<div style="color:var(--muted);font-size:13px">No active devices found.<br/>Open Spotify on a device first.</div>';
+      return;
+    }
+    const icons = { computer: '💻', smartphone: '📱', speaker: '🔊', tv: '📺', tablet: '📱', 'cast_video': '📺', 'cast_audio': '🔊' };
+    list.innerHTML = devices.map(d => `
+      <div class="device-item ${d.is_active ? 'active' : ''}" onclick="selectDevice('${d.id}', '${d.name.replace(/'/g,"\\'")}')">
+        <div class="device-icon">${icons[d.type?.toLowerCase()] || '🎵'}</div>
+        <div>
+          <div class="device-name">${d.name}</div>
+          <div class="device-type">${d.type}</div>
+        </div>
+        ${d.is_active ? '<div class="device-active-badge">PLAYING</div>' : ''}
+      </div>`).join('');
+  } catch(e) {
+    document.getElementById('device-list').innerHTML = '<div style="color:var(--red);font-size:13px">Could not load devices.</div>';
+  }
+};
+
+window.selectDevice = async function(deviceId, deviceName) {
+  document.getElementById('device-modal-bg')?.remove();
+  try {
+    await spotifyFetch('/me/player', {
+      method: 'PUT',
+      body: JSON.stringify({ device_ids: [deviceId], play: true })
+    });
+    state.deviceId = deviceId;
+    toast(`🎵 Switched to ${deviceName}`);
+  } catch(e) {
+    toast('❌ Could not switch device: ' + (e.message || e.code));
   }
 };
 
