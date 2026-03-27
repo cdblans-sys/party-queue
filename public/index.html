@@ -321,20 +321,27 @@ function initSpotifySDK(token) {
       if (!s) return;
       const track = s.track_window?.current_track;
       if (!track) return;
-      updateNowPlaying(track, s);
-      // Write progress to Firebase so guests can sync
-      try {
-        await setDoc(doc(db,'nowPlaying','current'), {
-          title: track.name,
-          artist: track.artists?.map(a=>a.name).join(', ')||'',
-          art: track.album?.images?.[0]?.url||'',
-          uri: track.uri,
-          duration_ms: track.duration_ms,
-          position_ms: s.position,
-          paused: s.paused,
-          updatedAt: Date.now()
-        }, {merge: true});
-      } catch(e) { console.warn('Progress sync error', e); }
+
+      const isSameSong = state.currentTrackId === track.id;
+      const isDeviceTransferGlitch = isSameSong && s.position < 1500 && !s.paused;
+
+      // Ignore the false position=0 spike that happens right after switching devices
+      if (!isDeviceTransferGlitch) {
+        updateNowPlaying(track, s);
+        try {
+          await setDoc(doc(db,'nowPlaying','current'), {
+            title: track.name,
+            artist: track.artists?.map(a=>a.name).join(', ')||'',
+            art: track.album?.images?.[0]?.url||'',
+            uri: track.uri,
+            duration_ms: track.duration_ms,
+            position_ms: s.position,
+            paused: s.paused,
+            updatedAt: Date.now()
+          }, {merge: true});
+        } catch(e) { console.warn('Progress sync error', e); }
+      }
+
       if (s.paused && s.position === 0 && state.currentTrackId && state.currentTrackId === track.id) {
         await playNextInQueue();
       }
