@@ -451,8 +451,14 @@ window.vote = async function(idx) {
   const hasVoted = !!state.userVotes[songId];
   const ref = doc(db,'queue',songId);
   try {
-    if (hasVoted) { await updateDoc(ref,{votes:increment(-1)}); delete state.userVotes[songId]; }
-    else { await updateDoc(ref,{votes:increment(1)}); state.userVotes[songId]=true; }
+    // Use set with merge so it works even if doc is mid-sync
+    if (hasVoted) {
+      await setDoc(ref, {votes: increment(-1)}, {merge: true});
+      delete state.userVotes[songId];
+    } else {
+      await setDoc(ref, {votes: increment(1)}, {merge: true});
+      state.userVotes[songId] = true;
+    }
     localStorage.setItem('pq_votes', JSON.stringify(state.userVotes));
   } catch(e) {
     console.error('Vote error:', e);
