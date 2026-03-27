@@ -446,33 +446,38 @@ function initApp() {
   });
 
   onSnapshot(doc(db,'nowPlaying','current'), snap => {
-    if (snap.exists()) {
-      const d = snap.data();
-      updateNowPlaying({name:d.title, artists:[{name:d.artist}], album:{images:[{url:d.art}]}, duration_ms:d.duration_ms}, null);
-      // Guests animate progress bar from Firebase data
-      if (!state.isHost && d.position_ms != null && d.duration_ms && !d.paused) {
-        clearInterval(state.progressInterval);
-        // Estimate current position accounting for time since host wrote to Firebase
-        const elapsed = d.updatedAt ? Date.now() - d.updatedAt : 0;
-        let p = (d.position_ms || 0) + elapsed;
-        const dur = d.duration_ms;
-        const updateBar = () => {
-          if (p > dur) { clearInterval(state.progressInterval); return; }
-          document.getElementById('np-progress').style.width = `${(p/dur)*100}%`;
-          document.getElementById('np-current').textContent = msToTime(p);
-          document.getElementById('np-duration').textContent = msToTime(dur);
-          p += 1000;
-        };
-        updateBar();
-        state.progressInterval = setInterval(updateBar, 1000);
-      } else if (!state.isHost && d.paused) {
-        clearInterval(state.progressInterval);
-        if (d.position_ms != null && d.duration_ms) {
-          document.getElementById('np-progress').style.width = `${(d.position_ms/d.duration_ms)*100}%`;
-          document.getElementById('np-current').textContent = msToTime(d.position_ms);
-          document.getElementById('np-duration').textContent = msToTime(d.duration_ms);
-        }
-      }
+    if (!snap.exists()) return;
+    const d = snap.data();
+    updateNowPlaying({name:d.title, artists:[{name:d.artist}], album:{images:[{url:d.art}]}, duration_ms:d.duration_ms}, null);
+
+    // Always clear the old interval — new song or not, start fresh
+    clearInterval(state.progressInterval);
+
+    const dur = d.duration_ms;
+    if (!dur) return;
+
+    if (d.paused) {
+      // Just show the frozen position
+      const pos = d.position_ms || 0;
+      document.getElementById('np-progress').style.width = `${(pos/dur)*100}%`;
+      document.getElementById('np-current').textContent = msToTime(pos);
+      document.getElementById('np-duration').textContent = msToTime(dur);
+      return;
+    }
+
+    if (!state.isHost && d.position_ms != null) {
+      // Compensate for Firebase round-trip delay
+      const elapsed = d.updatedAt ? Date.now() - d.updatedAt : 0;
+      let p = Math.max(0, (d.position_ms || 0) + elapsed);
+      const updateBar = () => {
+        if (p > dur) { clearInterval(state.progressInterval); return; }
+        document.getElementById('np-progress').style.width = `${(p/dur)*100}%`;
+        document.getElementById('np-current').textContent = msToTime(p);
+        document.getElementById('np-duration').textContent = msToTime(dur);
+        p += 1000;
+      };
+      updateBar();
+      state.progressInterval = setInterval(updateBar, 1000);
     }
   });
 }
